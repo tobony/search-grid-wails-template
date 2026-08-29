@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/bin/
+frontend/wailsjs/
+*.syso
+
+# SQLite cache (runtime-generated)
+docs-cache.db
+cycletest_tmp.go
+
+# Private internal ops info (local only)
+AGENTS.private.md
+pbipush_tmp.py
