@@ -5,7 +5,7 @@
 
 # --- 환경 (로컬 개발 머신) ---
 # 호스트: (내부 빌드 서버 호스트명, Debian 12+/Ubuntu 22.04+)
-# 프로젝트 절대 경로: /opt/agent/shared/repo/search-grid-template-wails
+# 프로젝트 절대 경로: /home/b660/work/search-grid-template-wails
 # Go: /opt/agent/shared/toolchain/go (1.27.0)
 # Node: /opt/agent/shared/toolchain/node (22.23.2, npm 10.9.8)
 # wails CLI: ~/go-tools/bin/wails (v2.15.0)
