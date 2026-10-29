@@ -89,17 +89,6 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  // On startup, diagnose the environment (az installed? logged in?)
-  useEffect(() => {
-    void CheckEnv().then((r) => {
-      if (!r.ok) setEnv(r);
-    });
-  }, []);
-
   const handleSync = useCallback(async () => {
     setSyncing(true);
     showMsg(null);
@@ -121,6 +110,35 @@ function App() {
       setSyncing(false);
     }
   }, [showMsg]);
+
+  // 시작 시 1회: 캐시를 먼저 읽고(오프라인 우선 — 캐시가 있으면 네트워크를
+  // 쓰지 않는다), 캐시가 비어 있을 때만 Power BI 자동 동기화를 시도한다.
+  // az 미설치/미로그인이면 동기화 대신 배너만 띄워 시작을 막지 않는다.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const rows = await GetDocs().catch(() => null);
+      if (cancelled) return;
+      setDocs(rows ?? []);
+      setLoading(false);
+      if ((rows ?? []).length > 0) {
+        void CheckEnv().then((r) => {
+          if (!cancelled && !r.ok) setEnv(r);
+        });
+        return;
+      }
+      const envr = await CheckEnv();
+      if (cancelled) return;
+      if (!envr.ok) {
+        setEnv(envr);
+        return;
+      }
+      await handleSync();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [handleSync]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -169,7 +187,7 @@ function App() {
       {setup && (
         <SetupGuideDialog code={setup.errCode || 'apiError'} msg={setup.errMsg} hint={setup.errHint} onClose={() => setSetup(null)} />
       )}
-      {!env && (
+      {env && (
         <div className="envbanner">
           <span>⚠️ {envBannerText}</span>
           <button className="linklike" onClick={() => {
