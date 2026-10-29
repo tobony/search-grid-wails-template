@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	_ "modernc.org/sqlite"
 )
@@ -72,6 +73,15 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(`ALTER TABLE docs ADD COLUMN pending INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
+	}
+	// meta holds the issued-id high-water mark (next_id) so deleting the
+	// highest row no longer recycles its id. Older caches start empty and
+	// fall back to MAX(id)+1 on the first insert.
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS meta (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -203,27 +213,49 @@ func (s *Store) DeleteDoc(id int64) error {
 func (s *Store) Close() error { return s.db.Close() }
 
 // InsertDoc inserts one doc into the local cache with a new id.
-// The MAX(id)+1 read and the INSERT run in one transaction; combined
-// with the connection's BEGIN IMMEDIATE (_txlock=immediate) no
-// concurrent writer can grab the same id between the two statements.
+// Ids are monotonic per cache: the next id is max(issued-id high-water
+// mark from meta, MAX(id)+1), so deleting the highest row (the push
+// dataset delete path re-uploads the survivors) never recycles an id
+// that Power BI has already seen. Read + INSERT + counter bump share one
+// transaction, and the connection's BEGIN IMMEDIATE (_txlock=immediate)
+// keeps concurrent writers from grabbing the same id.
 func (s *Store) InsertDoc(d *Doc) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
 	var maxID sql.NullInt64
 	if err := tx.QueryRow(`SELECT MAX(id) FROM docs`).Scan(&maxID); err != nil {
 		return err
 	}
 	next := int64(1)
-	if maxID.Valid && maxID.Int64 > 0 {
+	if maxID.Valid && maxID.Int64 >= next {
 		next = maxID.Int64 + 1
 	}
+	// A stale/copied cache may still hold a higher high-water mark than the
+	// rows it has; the counter wins so ids never go backwards.
+	var issued sql.NullString
+	if err := tx.QueryRow(`SELECT value FROM meta WHERE key = 'next_id'`).Scan(&issued); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if issued.Valid {
+		if v, perr := strconv.ParseInt(issued.String, 10, 64); perr == nil && v > next {
+			next = v
+		}
+	}
+
 	d.ID = next
 	if _, err := tx.Exec(
 		`INSERT INTO docs (id, title, author, category, updated, status, synced_at) VALUES (?,?,?,?,?,?,datetime('now'))`,
 		d.ID, d.Title, d.Author, d.Category, d.Updated, d.Status); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO meta (key, value) VALUES ('next_id', ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		strconv.FormatInt(next+1, 10)); err != nil {
 		return err
 	}
 	return tx.Commit()
